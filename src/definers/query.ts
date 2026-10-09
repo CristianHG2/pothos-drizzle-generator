@@ -2,7 +2,12 @@ import { sql } from "drizzle-orm";
 import { type ModelData, DrizzleGenerator } from "../generator.js";
 import { getQueryFields } from "../libs/graphql.js";
 import { checkPermissionsAndGetParams } from "../libs/permissions.js";
-import { prepareQueryOptions, replaceColumnValues } from "../libs/resolver-helpers.js";
+import {
+  buildRelationCountContext,
+  prepareQueryOptions,
+  replaceColumnValues,
+  transformWhereForRelationalQuery,
+} from "../libs/resolver-helpers.js";
 import type { SchemaTypes } from "@pothos/core";
 import type { GraphQLResolveInfo } from "graphql";
 
@@ -44,7 +49,12 @@ export function defineFindMany<Types extends SchemaTypes>(
           info: GraphQLResolveInfo
         ) => {
           const params = checkPermissionsAndGetParams(modelName, "findMany", ctx, info, modelData);
-          const queryOptions = prepareQueryOptions(args, params, true);
+          const relationCountContext = buildRelationCountContext(
+            modelData.relations,
+            ctx,
+            tables
+          );
+          const queryOptions = prepareQueryOptions(args, params, true, relationCountContext);
 
           return generator
             .getQueryTable(ctx, modelName)
@@ -91,7 +101,12 @@ export function defineFindFirst<Types extends SchemaTypes>(
           info: GraphQLResolveInfo
         ) => {
           const params = checkPermissionsAndGetParams(modelName, "findFirst", ctx, info, modelData);
-          const queryOptions = prepareQueryOptions(args, params, false);
+          const relationCountContext = buildRelationCountContext(
+            modelData.relations,
+            ctx,
+            tables
+          );
+          const queryOptions = prepareQueryOptions(args, params, false, relationCountContext);
 
           return generator
             .getQueryTable(ctx, modelName)
@@ -113,7 +128,8 @@ export function defineCount<Types extends SchemaTypes>(
   builder: PothosSchemaTypes.SchemaBuilder<Types>,
   generator: DrizzleGenerator<Types>,
   modelName: string,
-  modelData: ModelData
+  modelData: ModelData,
+  tables: Record<string, ModelData>
 ) {
   const { operationAliases, tableSingularAlias } = modelData;
   const inputWhere = generator.getInputWhere(modelName);
@@ -135,6 +151,11 @@ export function defineCount<Types extends SchemaTypes>(
           info: GraphQLResolveInfo
         ) => {
           const params = checkPermissionsAndGetParams(modelName, "count", ctx, info, modelData);
+          const relationCountContext = buildRelationCountContext(
+            modelData.relations,
+            ctx,
+            tables
+          );
 
           return generator
             .getQueryTable(ctx, modelName)
@@ -142,9 +163,12 @@ export function defineCount<Types extends SchemaTypes>(
               columns: {},
               extras: { _count: () => sql`count(*) ` },
               ...args,
-              where: {
-                AND: [structuredClone(args.where), params.where].filter((v) => v),
-              },
+              where: transformWhereForRelationalQuery(
+                {
+                  AND: [structuredClone(args.where), params.where].filter((v) => v),
+                },
+                relationCountContext
+              ),
             } as never)
             .then((v: unknown) => (v as { _count: number })._count);
         },

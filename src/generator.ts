@@ -13,7 +13,7 @@ import {
   JSONResolver,
 } from "graphql-scalars";
 import { expandOperations, OperationBasic } from "./libs/operations.js";
-import { createInputOperator } from "./libs/pothos.js";
+import { createInputOperator, createJsonbInputOperator } from "./libs/pothos.js";
 import type { SchemaTypes } from "@pothos/core";
 import type { DrizzleClient } from "@pothos/plugin-drizzle";
 
@@ -329,7 +329,8 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
     });
   }
   getInputWhere(modelName: string) {
-    const { tableInfo, relations } = this.getTables()[modelName]!;
+    const { tableInfo, relations, filterColumns } = this.getTables()[modelName]!;
+    const intOperator = this.getInputOperator("Int");
     const inputWhere = this.getInputType(modelName, "Where", {
       fields: (t) => {
         return Object.fromEntries([
@@ -340,7 +341,7 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
             return [
               c.name,
               t.field({
-                type: this.getInputOperator(this.getDataType(c)),
+                type: this.getInputOperator(this.getDataType(c), c),
               }),
             ];
           }),
@@ -355,34 +356,53 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
               }),
             ];
           }),
+          ...Object.entries(relations).flatMap(([key, relay]) => {
+            if (relay.relationType !== "many") return [];
+            const table = this.getTable(relay.targetTable);
+            if (!table) return [];
+            const countName = `${key}Count`;
+            if (!filterColumns.includes(countName)) return [];
+            return [[countName, t.field({ type: intOperator })]];
+          }),
         ]);
       },
     });
     return inputWhere;
   }
   getInputOrderBy(modelName: string) {
-    const { tableInfo } = this.getTables()[modelName]!;
+    const { tableInfo, relations, filterColumns } = this.getTables()[modelName]!;
     const inputWhere = this.getInputType(modelName, "OrderBy", {
       fields: (t) => {
-        return Object.fromEntries(
-          tableInfo.columns.map((c: Column) => {
+        return Object.fromEntries([
+          ...tableInfo.columns.map((c: Column) => {
             return [
               c.name,
               t.field({
                 type: this.enums["OrderBy"]!,
               }),
             ];
-          })
-        );
+          }),
+          ...Object.entries(relations).flatMap(([key, relay]) => {
+            if (relay.relationType !== "many") return [];
+            const table = this.getTable(relay.targetTable);
+            if (!table) return [];
+            const countName = `${key}Count`;
+            if (!filterColumns.includes(countName)) return [];
+            return [[countName, t.field({ type: this.enums["OrderBy"]! })]];
+          }),
+        ]);
       },
     });
     return inputWhere;
   }
 
-  getInputOperator(type: string | [string]) {
+  getInputOperator(type: string | [string], column?: Column) {
+    const isJsonb = column?.getSQLType() === "jsonb";
     const typeName = Array.isArray(type) ? `Array${type[0]}` : type;
-    const input = this.inputOperators[typeName] ?? createInputOperator(this.builder, type);
-    this.inputOperators[typeName] = input;
+    const cacheKey = isJsonb ? `${typeName}b` : typeName;
+    const factory = isJsonb ? createJsonbInputOperator : createInputOperator;
+    const input = this.inputOperators[cacheKey] ?? factory(this.builder, type);
+    this.inputOperators[cacheKey] = input;
     return input;
   }
   createInputType() {

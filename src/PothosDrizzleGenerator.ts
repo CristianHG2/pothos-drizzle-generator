@@ -46,7 +46,7 @@ export class PothosDrizzleGenerator<
       defineFindFirst(builder, generator, modelName, modelData, tables);
     }
     if (operations.includes("count")) {
-      defineCount(builder, generator, modelName, modelData);
+      defineCount(builder, generator, modelName, modelData, tables);
     }
     if (operations.includes("createOne")) {
       defineCreateOne(builder, generator, modelName, modelData);
@@ -55,7 +55,7 @@ export class PothosDrizzleGenerator<
       defineCreateMany(builder, generator, modelName, modelData);
     }
     if (operations.includes("update")) {
-      defineUpdate(builder, generator, modelName, modelData);
+      defineUpdate(builder, generator, modelName, modelData, tables);
     }
     if (operations.includes("delete")) {
       defineDelete(builder, generator, modelName, modelData, tables);

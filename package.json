@@ -1,6 +1,6 @@
 {
-  "name": "pothos-drizzle-generator",
-  "version": "0.1.29",
+  "name": "@cristianhg/pothos-drizzle-generator",
+  "version": "0.1.32",
   "main": "./dist/cjs/index.js",
   "types": "./dist/cjs/index.d.ts",
   "exports": {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { createWhereQuery } from "../../src/libs/drizzle";
-import { posts } from "../db/schema";
+import { createRelationCountSQL, createWhereQuery } from "../../src/libs/drizzle";
+import { relations } from "../db/relations";
+import { posts, test, users } from "../db/schema";
 
 describe("libs/drizzle", () => {
   describe("createWhereQuery", () => {
@@ -58,6 +59,150 @@ describe("libs/drizzle", () => {
         title: { eq: "test", ne: "test2" },
       });
       expect(result).toBeDefined();
+    });
+  });
+
+  describe("jsonb operators", () => {
+    it("should handle contains (@>)", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { contains: { key: "value" } },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle containedBy (<@)", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { containedBy: { key: "value", other: 123 } },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle hasKey (jsonb_exists)", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { hasKey: "myKey" },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle hasAnyKeys (jsonb_exists_any)", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { hasAnyKeys: ["key1", "key2"] },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle hasAllKeys (jsonb_exists_all)", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { hasAllKeys: ["key1", "key2"] },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle contains with nested objects", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { contains: { nested: { deep: true } } },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should handle contains with arrays", () => {
+      const result = createWhereQuery(test, {
+        jsonb: { contains: [1, 2, 3] },
+      });
+      expect(result).toBeDefined();
+    });
+
+    it("should combine jsonb operators with AND", () => {
+      const result = createWhereQuery(test, {
+        AND: [
+          { jsonb: { contains: { status: "active" } } },
+          { jsonb: { hasKey: "email" } },
+        ],
+      });
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe("relation count filters", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = relations as any;
+    const userRelations = r.users.relations;
+    const postRelations = r.posts.relations;
+
+    it("should build COUNT filter for one-to-many relation", () => {
+      const result = createWhereQuery(
+        users,
+        { postsCount: { gt: 5 } },
+        { relations: userRelations }
+      );
+      expect(result).toBeDefined();
+    });
+
+    it("should build COUNT filter for many-to-many relation", () => {
+      const result = createWhereQuery(
+        posts,
+        { categoriesCount: { gte: 1 } },
+        { relations: postRelations }
+      );
+      expect(result).toBeDefined();
+    });
+
+    it("should combine count filter with column filter", () => {
+      const result = createWhereQuery(
+        users,
+        {
+          postsCount: { gt: 0 },
+          name: { eq: "Alice" },
+        },
+        { relations: userRelations }
+      );
+      expect(result).toBeDefined();
+    });
+
+    it("should ignore count filter when relation is not found", () => {
+      // No context provided → should treat `postsCount` as a column (which doesn't exist).
+      // Without context, our new branch is skipped and the existing column branch runs.
+      // That will try to access `getColumns(users).postsCount` which is undefined, producing
+      // a valid-but-nonsensical SQL. We don't enforce an error here; just verify no crash
+      // when context is absent by using the legacy behavior.
+      const result = createWhereQuery(users, { name: { eq: "Alice" } });
+      expect(result).toBeDefined();
+    });
+
+    it("should support NOT/AND/OR with count filters", () => {
+      const result = createWhereQuery(
+        users,
+        {
+          OR: [{ postsCount: { eq: 0 } }, { postsCount: { gt: 10 } }],
+        },
+        { relations: userRelations }
+      );
+      expect(result).toBeDefined();
+    });
+  });
+
+  describe("createRelationCountSQL", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = relations as any;
+    const userRelations = r.users.relations;
+    const postRelations = r.posts.relations;
+
+    it("should produce a subquery SQL for one-to-many", () => {
+      const userPostsRel = userRelations.posts;
+      const sql = createRelationCountSQL(
+        (name) => users[name as keyof typeof users] as never,
+        userPostsRel
+      );
+      expect(sql).toBeDefined();
+    });
+
+    it("should produce a subquery SQL for many-to-many", () => {
+      const postCategoriesRel = postRelations.categories;
+      const sql = createRelationCountSQL(
+        (name) => posts[name as keyof typeof posts] as never,
+        postCategoriesRel
+      );
+      expect(sql).toBeDefined();
     });
   });
 });

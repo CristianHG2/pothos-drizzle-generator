@@ -1,7 +1,8 @@
+import { eq } from "drizzle-orm";
 import { gql } from "@urql/core";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { relations } from "../db/relations";
-import { postsToCategories } from "../db/schema";
+import { posts, postsToCategories } from "../db/schema";
 import { createClient, filterObject, getSearchPath } from "../libs/test-tools";
 
 export const { app, client, db } = createClient({
@@ -176,6 +177,112 @@ describe("Query: findManyPost (Drizzle v2 Pure Object Syntax)", () => {
     expect(result.data?.findManyPost).toHaveLength(0);
   });
 
+  it("should filter by jsonb contains operator", async () => {
+    const targetPosts = await db.query.posts.findMany({ limit: 2 });
+    if (targetPosts.length < 2) throw new Error("Need at least 2 posts");
+
+    await db
+      .update(posts)
+      .set({ metadata: { category: "jsonb_test", level: 1 } })
+      .where(eq(posts.id, targetPosts[0]!.id));
+    await db
+      .update(posts)
+      .set({ metadata: { category: "jsonb_test", level: 2 } })
+      .where(eq(posts.id, targetPosts[1]!.id));
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: {
+        metadata: { contains: { category: "jsonb_test" } },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findManyPost.length).toBeGreaterThanOrEqual(2);
+    const returnedIds = result.data?.findManyPost.map((p) => p.id);
+    expect(returnedIds).toContain(targetPosts[0]!.id);
+    expect(returnedIds).toContain(targetPosts[1]!.id);
+  });
+
+  it("should filter by jsonb hasKey operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { unique_marker: true } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: {
+        metadata: { hasKey: "unique_marker" },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findManyPost.length).toBeGreaterThanOrEqual(1);
+    expect(result.data?.findManyPost.map((p) => p.id)).toContain(post.id);
+  });
+
+  it("should filter by jsonb containedBy operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { color: "blue" } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: {
+        metadata: { containedBy: { color: "blue", size: "large", weight: 10 } },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findManyPost.length).toBeGreaterThanOrEqual(1);
+    expect(result.data?.findManyPost.map((p) => p.id)).toContain(post.id);
+  });
+
+  it("should filter by jsonb hasAnyKeys operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { gamma: 1 } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: {
+        metadata: { hasAnyKeys: ["gamma", "delta"] },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findManyPost.length).toBeGreaterThanOrEqual(1);
+    expect(result.data?.findManyPost.map((p) => p.id)).toContain(post.id);
+  });
+
+  it("should filter by jsonb hasAllKeys operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { keyX: 1, keyY: 2 } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: {
+        metadata: { hasAllKeys: ["keyX", "keyY"] },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findManyPost.length).toBeGreaterThanOrEqual(1);
+    expect(result.data?.findManyPost.map((p) => p.id)).toContain(post.id);
+  });
+
   it("should filter by multiple IDs using 'in' operator in object", async () => {
     const targetPosts = await db.query.posts.findMany({ limit: 2 });
     const targetIds = targetPosts.map((p) => p.id);
@@ -190,6 +297,144 @@ describe("Query: findManyPost (Drizzle v2 Pure Object Syntax)", () => {
     result.data?.findManyPost.forEach((post) => {
       expect(targetIds).toContain(post.id);
     });
+  });
+
+  it("should filter posts by categoriesCount (many-to-many)", async () => {
+    // Seed: attach every category to the first post so it has a positive count.
+    const cats = await db.query.categories.findMany();
+    const firstPost = await db.query.posts.findFirst();
+    if (!firstPost || cats.length === 0) throw new Error("Seed data missing");
+    await db
+      .insert(postsToCategories)
+      .values(cats.map((c) => ({ postId: firstPost.id, categoryId: c.id })))
+      .onConflictDoNothing();
+
+    const result = await client.query<{ findManyPost: PostResponse[] }>(FIND_MANY_POST, {
+      where: { categoriesCount: { gte: 1 } },
+    });
+
+    expect(result.error).toBeUndefined();
+    const data = result.data?.findManyPost;
+    expect(data).toBeDefined();
+    expect(data!.map((p) => p.id)).toContain(firstPost.id);
+  });
+
+  it("should sort posts by categoriesCount Desc (many-to-many)", async () => {
+    const cats = await db.query.categories.findMany();
+    const somePosts = await db.query.posts.findMany({ limit: 2 });
+    if (cats.length === 0 || somePosts.length < 2) throw new Error("Seed data missing");
+    // Give the first post two categories, the second post zero.
+    await db
+      .insert(postsToCategories)
+      .values(cats.slice(0, 2).map((c) => ({ postId: somePosts[0]!.id, categoryId: c.id })))
+      .onConflictDoNothing();
+
+    const result = await client.query<{
+      findManyPost: (PostResponse & { categoriesCount: number })[];
+    }>(
+      gql`
+        query ($orderBy: [PostOrderBy!], $limit: Int) {
+          findManyPost(orderBy: $orderBy, limit: $limit) {
+            id
+            categoriesCount
+          }
+        }
+      `,
+      { orderBy: [{ categoriesCount: "Desc" }], limit: 3 }
+    );
+
+    expect(result.error).toBeUndefined();
+    const data = result.data!.findManyPost;
+    for (let i = 1; i < data.length; i++) {
+      expect(data[i - 1]!.categoriesCount).toBeGreaterThanOrEqual(data[i]!.categoriesCount);
+    }
+  });
+});
+
+describe("findMany - relation count where/orderBy (User/Post)", () => {
+  beforeAll(async () => {
+    await db.resetSchema();
+  });
+  afterAll(async () => {
+    await db.dropSchema();
+  });
+
+  it("should filter users by postsCount (one-to-many)", async () => {
+    const FIND_MANY_USER = gql`
+      query ($where: UserWhere) {
+        findManyUser(where: $where) {
+          id
+          postsCount
+        }
+      }
+    `;
+    const result = await client.query<{
+      findManyUser: { id: string; postsCount: number }[];
+    }>(FIND_MANY_USER, { where: { postsCount: { gt: 0 } } });
+
+    expect(result.error).toBeUndefined();
+    const data = result.data!.findManyUser;
+    expect(data.length).toBeGreaterThan(0);
+    data.forEach((u) => expect(u.postsCount).toBeGreaterThan(0));
+  });
+
+  it("should sort users by postsCount Desc (one-to-many)", async () => {
+    const FIND_MANY_USER = gql`
+      query ($orderBy: [UserOrderBy!]) {
+        findManyUser(orderBy: $orderBy) {
+          id
+          postsCount
+        }
+      }
+    `;
+    const result = await client.query<{
+      findManyUser: { id: string; postsCount: number }[];
+    }>(FIND_MANY_USER, { orderBy: [{ postsCount: "Desc" }] });
+
+    expect(result.error).toBeUndefined();
+    const data = result.data!.findManyUser;
+    for (let i = 1; i < data.length; i++) {
+      expect(data[i - 1]!.postsCount).toBeGreaterThanOrEqual(data[i]!.postsCount);
+    }
+  });
+
+  it("should filter users with no posts (postsCount eq 0)", async () => {
+    const FIND_MANY_USER = gql`
+      query ($where: UserWhere) {
+        findManyUser(where: $where) {
+          id
+          postsCount
+        }
+      }
+    `;
+    const result = await client.query<{
+      findManyUser: { id: string; postsCount: number }[];
+    }>(FIND_MANY_USER, { where: { postsCount: { eq: 0 } } });
+
+    expect(result.error).toBeUndefined();
+    result.data!.findManyUser.forEach((u) => expect(u.postsCount).toBe(0));
+  });
+
+  it("should combine count filter with column filter", async () => {
+    const FIND_MANY_USER = gql`
+      query ($where: UserWhere) {
+        findManyUser(where: $where) {
+          id
+          name
+          postsCount
+        }
+      }
+    `;
+    const result = await client.query<{
+      findManyUser: { id: string; name: string; postsCount: number }[];
+    }>(FIND_MANY_USER, {
+      where: {
+        AND: [{ postsCount: { gte: 0 } }, { name: { isNotNull: true } }],
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data!.findManyUser.length).toBeGreaterThan(0);
   });
 });
 describe("findMany - customize", async () => {

@@ -3,6 +3,7 @@ import { createWhereQuery } from "../libs/drizzle.js";
 import { getQueryFields } from "../libs/graphql.js";
 import { checkPermissionsAndGetParams } from "../libs/permissions.js";
 import {
+  buildRelationCountContext,
   getReturning,
   insertRelayValue,
   replaceColumnValues,
@@ -152,7 +153,8 @@ export function defineUpdate<Types extends SchemaTypes>(
   builder: PothosSchemaTypes.SchemaBuilder<Types>,
   generator: DrizzleGenerator<Types>,
   modelName: string,
-  modelData: ModelData
+  modelData: ModelData,
+  tables: Record<string, ModelData>
 ) {
   const { tableInfo, columns, table, relations, tableSingularAlias, operationAliases } = modelData;
   const inputUpdate = generator.getInputUpdate(modelName);
@@ -185,9 +187,14 @@ export function defineUpdate<Types extends SchemaTypes>(
           if (!isRelay) {
             query({});
           }
-          const whereQuery = createWhereQuery(table, {
-            AND: [structuredClone(args.where), params.where].filter((v) => v),
-          } as never);
+          const relationCountContext = buildRelationCountContext(relations, ctx, tables);
+          const whereQuery = createWhereQuery(
+            table,
+            {
+              AND: [structuredClone(args.where), params.where].filter((v) => v),
+            } as never,
+            relationCountContext
+          );
 
           if (!returning) {
             return client
@@ -250,6 +257,11 @@ export function defineDelete<Types extends SchemaTypes>(
           const whereCondition = {
             AND: [structuredClone(args.where), params.where].filter((v) => v),
           };
+          const relationCountContext = buildRelationCountContext(
+            modelData.relations,
+            ctx,
+            tables
+          );
 
           if (isRelay) {
             const result = await generator
@@ -265,12 +277,16 @@ export function defineDelete<Types extends SchemaTypes>(
             await generator
               .getClient(ctx)
               .delete(table as never)
-              .where(createWhereQuery(table, whereCondition as never));
+              .where(createWhereQuery(table, whereCondition as never, relationCountContext));
             return result;
           }
 
           query({});
-          const whereQuery = createWhereQuery(table, whereCondition as never);
+          const whereQuery = createWhereQuery(
+            table,
+            whereCondition as never,
+            relationCountContext
+          );
 
           return returning
             ? generator

@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { gql } from "@urql/core";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { relations } from "../db/relations";
+import { posts } from "../db/schema";
 import { createClient, getSearchPath } from "../libs/test-tools";
 
 export const { app, client, db } = createClient({
@@ -251,6 +253,105 @@ describe("Query: findFirstPost (Drizzle v2 Pure Object Syntax)", () => {
 
     expect(result.data?.findFirstPost.authorId).toBe(author.id);
     expect(result.data?.findFirstPost.author.id).toBe(author.id);
+  });
+
+  it("should filter by jsonb contains operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { status: "featured", tags: ["tech"] } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findFirstPost: PostResponse }>(FIND_FIRST_POST, {
+      where: {
+        metadata: { contains: { status: "featured" } },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findFirstPost).toBeDefined();
+    expect(result.data?.findFirstPost.id).toBe(post.id);
+  });
+
+  it("should filter by jsonb hasKey operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { priority: "high" } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findFirstPost: PostResponse }>(FIND_FIRST_POST, {
+      where: {
+        metadata: { hasKey: "priority" },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findFirstPost).toBeDefined();
+  });
+
+  it("should filter by jsonb containedBy operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { color: "red" } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findFirstPost: PostResponse }>(FIND_FIRST_POST, {
+      where: {
+        metadata: { containedBy: { color: "red", size: "large", weight: 10 } },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findFirstPost).toBeDefined();
+    expect(result.data?.findFirstPost.id).toBe(post.id);
+  });
+
+  it("should filter by jsonb hasAnyKeys operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { alpha: 1 } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findFirstPost: PostResponse }>(FIND_FIRST_POST, {
+      where: {
+        metadata: { hasAnyKeys: ["alpha", "beta"] },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findFirstPost).toBeDefined();
+    expect(result.data?.findFirstPost.id).toBe(post.id);
+  });
+
+  it("should filter by jsonb hasAllKeys operator", async () => {
+    const post = await db.query.posts.findFirst();
+    if (!post) throw new Error("Post required");
+
+    await db
+      .update(posts)
+      .set({ metadata: { keyA: 1, keyB: 2 } })
+      .where(eq(posts.id, post.id));
+
+    const result = await client.query<{ findFirstPost: PostResponse }>(FIND_FIRST_POST, {
+      where: {
+        metadata: { hasAllKeys: ["keyA", "keyB"] },
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.data?.findFirstPost).toBeDefined();
+    expect(result.data?.findFirstPost.id).toBe(post.id);
   });
 
   it("should verify all parameters using FIND_FIRST_POST4", async () => {

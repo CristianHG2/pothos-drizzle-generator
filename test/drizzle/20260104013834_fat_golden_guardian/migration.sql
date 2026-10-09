@@ -11,6 +11,7 @@ CREATE TABLE "Post" (
 	"published" boolean DEFAULT false NOT NULL,
 	"title" text DEFAULT 'New Post' NOT NULL,
 	"content" text DEFAULT '' NOT NULL,
+	"metadata" jsonb,
 	"authorId" uuid,
 	"createdAt" timestamp with time zone DEFAULT now() NOT NULL,
 	"updatedAt" timestamp with time zone DEFAULT now() NOT NULL,

@@ -27,6 +27,7 @@ export const posts = pgTable("Post", {
   published: boolean().notNull().default(false),
   title: text().notNull().default("New Post"),
   content: text().notNull().default(""),
+  metadata: p.jsonb(),
   authorId: uuid().references(() => users.id, { onDelete: "cascade" }),
   createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),

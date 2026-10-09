@@ -1,5 +1,7 @@
-import { and, eq, sql, type Column, type RelationsRecord } from "drizzle-orm";
+import { and, eq, sql, type Column, type RelationsRecord, type SQL } from "drizzle-orm";
+import { createRelationCountSQL, createWhereQuery } from "./drizzle.js";
 import { getQueryFields, type FieldTree } from "./graphql.js";
+import { checkPermissionsAndGetParams } from "./permissions.js";
 import type { DbClient, ModelData } from "../generator.js";
 import type { ResolvedOperationParams } from "./permissions.js";
 import type { GraphQLResolveInfo } from "graphql";
@@ -11,21 +13,215 @@ type QueryArgs = {
   orderBy?: object[];
 };
 
+/**
+ * Context enabling `${relationName}Count` filter/orderBy keys in the relational
+ * query pipeline. Build with `buildRelationCountContext` from a ModelData's
+ * relations plus ctx/tables (to resolve permissions for counted relations).
+ */
+export type RelationCountContext = {
+  relations: RelationsRecord;
+  relationPermissionsSQL: Map<string, SQL | undefined>;
+};
+
+export function buildRelationCountContext(
+  relations: RelationsRecord,
+  ctx: object,
+  tables: Record<string, ModelData>
+): RelationCountContext {
+  const relationPermissionsSQL = new Map<string, SQL | undefined>();
+  for (const [key, relay] of Object.entries(relations)) {
+    if (relay.relationType !== "many") continue;
+    const target = tables[relay.targetTableName];
+    if (!target) continue;
+    const params = checkPermissionsAndGetParams(
+      relay.targetTableName,
+      "count",
+      ctx,
+      null,
+      target
+    );
+    const permSQL = params.where
+      ? createWhereQuery(relay.targetTable, params.where as never)
+      : undefined;
+    relationPermissionsSQL.set(key, permSQL);
+  }
+  return { relations, relationPermissionsSQL };
+}
+
+// Custom JSONB operators not supported by drizzle's relational query API.
+// These get converted to RAW SQL entries in the where tree.
+const CUSTOM_JSONB_OPS = new Set([
+  "contains",
+  "containedBy",
+  "hasKey",
+  "hasAnyKeys",
+  "hasAllKeys",
+]);
+
+const ALL_OPERATOR_KEYS = new Set([
+  "eq", "ne", "gt", "gte", "lt", "lte", "like", "notLike", "ilike", "notIlike",
+  "isNull", "isNotNull", "in", "notIn",
+  "arrayContains", "arrayContained", "arrayOverlaps",
+  "AND", "OR", "NOT",
+  ...CUSTOM_JSONB_OPS,
+]);
+
+type WhereNode = Record<string, unknown>;
+
+function isColumnFilter(value: Record<string, unknown>): boolean {
+  return Object.keys(value).every((k) => ALL_OPERATOR_KEYS.has(k));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildCustomOpSQL(sqlFn: typeof sql, column: any, op: string, value: unknown) {
+  switch (op) {
+    case "contains":
+      return sqlFn`${column} @> ${JSON.stringify(value)}::jsonb`;
+    case "containedBy":
+      return sqlFn`${column} <@ ${JSON.stringify(value)}::jsonb`;
+    case "hasKey":
+      return sqlFn`jsonb_exists(${column}, ${value})`;
+    case "hasAnyKeys":
+      return sqlFn`jsonb_exists_any(${column}, array[${sqlFn.join(
+        (value as string[]).map((v) => sqlFn`${v}`),
+        sqlFn`, `
+      )}])`;
+    case "hasAllKeys":
+      return sqlFn`jsonb_exists_all(${column}, array[${sqlFn.join(
+        (value as string[]).map((v) => sqlFn`${v}`),
+        sqlFn`, `
+      )}])`;
+  }
+}
+
+type CountFilterPart = { relationName: string; ops: Record<string, unknown> };
+
+function transformWhereNode(
+  node: WhereNode,
+  context?: RelationCountContext
+): WhereNode {
+  const result: WhereNode = {};
+  const rawParts: { columnName: string; op: string; value: unknown }[] = [];
+  const countParts: CountFilterPart[] = [];
+
+  for (const [key, value] of Object.entries(node)) {
+    if (value === undefined) continue;
+
+    if ((key === "AND" || key === "OR") && Array.isArray(value)) {
+      result[key] = value.map((v) => transformWhereNode(v as WhereNode, context));
+    } else if (key === "NOT" && typeof value === "object" && value !== null) {
+      result[key] = transformWhereNode(value as WhereNode, context);
+    } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const objValue = value as Record<string, unknown>;
+      // Detect `${relationName}Count` filter keys against the model's relations.
+      if (context && key.endsWith("Count")) {
+        const relName = key.slice(0, -"Count".length);
+        const relay = context.relations[relName];
+        if (relay && relay.relationType === "many" && isColumnFilter(objValue)) {
+          const ops: Record<string, unknown> = {};
+          for (const [op, opVal] of Object.entries(objValue)) {
+            if (opVal !== undefined) ops[op] = opVal;
+          }
+          if (Object.keys(ops).length > 0) {
+            countParts.push({ relationName: relName, ops });
+          }
+          continue;
+        }
+      }
+      if (isColumnFilter(objValue)) {
+        const standardOps: Record<string, unknown> = {};
+        for (const [op, opVal] of Object.entries(objValue)) {
+          if (opVal === undefined) continue;
+          if (CUSTOM_JSONB_OPS.has(op)) {
+            rawParts.push({ columnName: key, op, value: opVal });
+          } else {
+            standardOps[op] = opVal;
+          }
+        }
+        if (Object.keys(standardOps).length > 0) {
+          result[key] = standardOps;
+        }
+      } else {
+        result[key] = transformWhereNode(objValue, context);
+      }
+    } else {
+      result[key] = value;
+    }
+  }
+
+  if (rawParts.length > 0 || countParts.length > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    result.RAW = (table: any, ops: { sql: typeof sql; and: typeof and }) => {
+      const parts: SQL[] = [];
+      for (const { columnName, op, value } of rawParts) {
+        const col = ops.sql`${table}.${ops.sql.identifier(columnName)}`;
+        const built = buildCustomOpSQL(ops.sql, col, op, value);
+        if (built) parts.push(built);
+      }
+      for (const { relationName, ops: countOps } of countParts) {
+        const relay = context!.relations[relationName]!;
+        const permSQL = context!.relationPermissionsSQL.get(relationName);
+        const countSQL = createRelationCountSQL(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (name) => (table as any)[name] as Column,
+          relay,
+          permSQL
+        );
+        for (const [op, opVal] of Object.entries(countOps)) {
+          const fn = COUNT_OPERATOR_MAP[op];
+          if (!fn) continue;
+          parts.push(fn(countSQL, opVal));
+        }
+      }
+      return parts.length === 1 ? parts[0]! : ops.and(...parts)!;
+    };
+  }
+
+  return result;
+}
+
+// Operator functions usable against a SQL expression (the COUNT subquery).
+// Mirrors drizzle's operator set for Int-like filters.
+const COUNT_OPERATOR_MAP: Record<string, (expr: SQL, value: unknown) => SQL> = {
+  eq: (expr, v) => sql`${expr} = ${v}`,
+  ne: (expr, v) => sql`${expr} <> ${v}`,
+  gt: (expr, v) => sql`${expr} > ${v}`,
+  gte: (expr, v) => sql`${expr} >= ${v}`,
+  lt: (expr, v) => sql`${expr} < ${v}`,
+  lte: (expr, v) => sql`${expr} <= ${v}`,
+  in: (expr, v) =>
+    sql`${expr} IN (${sql.join((v as unknown[]).map((x) => sql`${x}`), sql`, `)})`,
+  notIn: (expr, v) =>
+    sql`${expr} NOT IN (${sql.join((v as unknown[]).map((x) => sql`${x}`), sql`, `)})`,
+};
+
+export function transformWhereForRelationalQuery(
+  where: WhereNode | undefined,
+  context?: RelationCountContext
+): WhereNode | undefined {
+  if (!where) return where;
+  return transformWhereNode(where, context);
+}
+
 export function prepareQueryOptions(
   args: QueryArgs,
   params: ResolvedOperationParams,
-  isMany: boolean
+  isMany: boolean,
+  context?: RelationCountContext
 ) {
-  const where = {
-    AND: [structuredClone(args.where), params.where].filter((v) => v),
-  };
+  const where = transformWhereForRelationalQuery(
+    {
+      AND: [structuredClone(args.where), params.where].filter((v) => v),
+    },
+    context
+  )!;
 
-  const orderBy =
-    args.orderBy && Object.keys(args.orderBy).length
-      ? Object.fromEntries(args.orderBy.flatMap((v) => Object.entries(v)))
-      : params.orderBy;
+  const orderBy = resolveOrderBy(args.orderBy, params.orderBy, context);
 
-  const queryOptions: Omit<QueryArgs, "orderBy"> & { where: object; orderBy?: object } = {
+  const queryOptions: Omit<QueryArgs, "orderBy"> & {
+    where: object;
+    orderBy?: object | ((table: unknown, ops: unknown) => unknown);
+  } = {
     ...args,
     where,
     orderBy,
@@ -39,6 +235,70 @@ export function prepareQueryOptions(
   }
 
   return queryOptions;
+}
+
+/**
+ * Build the relational-query `orderBy` option. Flat column sort stays as an
+ * object (backwards compatible). When any sort key is a `${relationName}Count`
+ * known to `context`, switch to the callback form so we can emit a correlated
+ * COUNT subquery as the order-by expression.
+ */
+export function resolveOrderBy(
+  argsOrderBy: object[] | undefined,
+  paramsOrderBy: object | undefined,
+  context?: RelationCountContext
+):
+  | object
+  | undefined
+  | ((
+      table: Record<string, Column>,
+      ops: {
+        sql: typeof sql;
+        asc: (expr: SQL | Column) => SQL;
+        desc: (expr: SQL | Column) => SQL;
+      }
+    ) => SQL[]) {
+  const entries: [string, unknown][] =
+    argsOrderBy && Object.keys(argsOrderBy).length
+      ? argsOrderBy.flatMap((v) => Object.entries(v))
+      : paramsOrderBy
+        ? Object.entries(paramsOrderBy)
+        : [];
+
+  if (entries.length === 0) return undefined;
+
+  const hasCount =
+    context &&
+    entries.some(([key]) => {
+      if (!key.endsWith("Count")) return false;
+      const rel = context.relations[key.slice(0, -"Count".length)];
+      return rel && rel.relationType === "many";
+    });
+
+  if (!hasCount) {
+    return Object.fromEntries(entries);
+  }
+
+  return (table, ops) => {
+    return entries.flatMap(([key, direction]) => {
+      const dir = String(direction).toLowerCase() === "desc" ? ops.desc : ops.asc;
+      if (key.endsWith("Count")) {
+        const relName = key.slice(0, -"Count".length);
+        const relay = context!.relations[relName];
+        if (relay && relay.relationType === "many") {
+          const permSQL = context!.relationPermissionsSQL.get(relName);
+          const countSQL = createRelationCountSQL(
+            (name) => table[name] as Column,
+            relay,
+            permSQL
+          );
+          return [dir(countSQL)];
+        }
+      }
+      const col = table[key];
+      return col ? [dir(col)] : [];
+    });
+  };
 }
 
 export function separateInput(input: object, columns: Pick<Column, "name">[]) {

@@ -2,6 +2,10 @@ import { and, eq, sql, type AnyRelation, type Table } from "drizzle-orm";
 import { type ModelData, DrizzleGenerator } from "../generator.js";
 import { createWhereQuery } from "../libs/drizzle.js";
 import { checkPermissionsAndGetParams } from "../libs/permissions.js";
+import {
+  buildRelationCountContext,
+  transformWhereForRelationalQuery,
+} from "../libs/resolver-helpers.js";
 import type { SchemaTypes } from "@pothos/core";
 import type { DrizzleObjectFieldBuilder } from "@pothos/plugin-drizzle";
 
@@ -87,6 +91,11 @@ function createRelationField<Types extends SchemaTypes, Shape>(
           null,
           tables[targetModelName]!
         );
+        const targetRelationCountContext = buildRelationCountContext(
+          tables[targetModelName]!.relations,
+          ctx,
+          tables
+        );
 
         return {
           ...args,
@@ -95,9 +104,12 @@ function createRelationField<Types extends SchemaTypes, Shape>(
             params.limit && args.limit
               ? Math.min(params.limit, args.limit)
               : (params.limit ?? args.limit),
-          where: {
-            AND: [structuredClone(args.where), params.where].filter((v) => v),
-          },
+          where: transformWhereForRelationalQuery(
+            {
+              AND: [structuredClone(args.where), params.where].filter((v) => v),
+            },
+            targetRelationCountContext
+          ),
           orderBy:
             args.orderBy && Object.keys(args.orderBy).length
               ? Object.fromEntries(args.orderBy.flatMap((v) => Object.entries(v)))
@@ -164,9 +176,17 @@ function createRelationCountField<Types extends SchemaTypes, Shape>(
                             table[v.name as keyof typeof table]
                           )
                         ),
-                        createWhereQuery(relay.targetTable, {
-                          AND: [structuredClone(args.where), params.where].filter((v) => v),
-                        } as never)
+                        createWhereQuery(
+                          relay.targetTable,
+                          {
+                            AND: [structuredClone(args.where), params.where].filter((v) => v),
+                          } as never,
+                          buildRelationCountContext(
+                            tables[targetModelName]!.relations,
+                            ctx,
+                            tables
+                          )
+                        )
                       )
                     );
                 },
@@ -189,9 +209,13 @@ function createRelationCountField<Types extends SchemaTypes, Shape>(
             null,
             tables[targetModelName]!
           );
-          return createWhereQuery(relay.targetTable, {
-            AND: [structuredClone(args.where), params.where].filter((v) => v),
-          } as never);
+          return createWhereQuery(
+            relay.targetTable,
+            {
+              AND: [structuredClone(args.where), params.where].filter((v) => v),
+            } as never,
+            buildRelationCountContext(tables[targetModelName]!.relations, ctx, tables)
+          );
         },
       } as never),
     ];
