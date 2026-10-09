@@ -328,16 +328,47 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
       },
     });
   }
+  /**
+   * Columns a caller may filter or sort by. A column excluded from `fields` is
+   * not readable, so it must not be filterable or sortable either: a `like` or
+   * `gt` filter, or an ordering, over an unreadable column returns nothing
+   * directly but lets the caller narrow its value one character at a time.
+   */
+  getFilterableColumns(modelName: string) {
+    const { tableInfo, filterColumns } = this.getTables()[modelName]!;
+    return tableInfo.columns.filter((c: Column) => filterColumns.includes(c.name));
+  }
+  getFilterableRelations(modelName: string) {
+    const { relations, filterColumns } = this.getTables()[modelName]!;
+    return Object.entries(relations).filter(
+      ([key, relay]) => filterColumns.includes(key) && this.getTable(relay.targetTable)
+    );
+  }
+  getRelationCountFields(modelName: string) {
+    const { relations, filterColumns } = this.getTables()[modelName]!;
+    return Object.entries(relations)
+      .filter(
+        ([key, relay]) =>
+          relay.relationType === "many" &&
+          this.getTable(relay.targetTable) &&
+          filterColumns.includes(`${key}Count`)
+      )
+      .map(([key]) => `${key}Count`);
+  }
+  hasInputOrderBy(modelName: string) {
+    return (
+      this.getFilterableColumns(modelName).length > 0 ||
+      this.getRelationCountFields(modelName).length > 0
+    );
+  }
   getInputWhere(modelName: string) {
-    const { tableInfo, relations, filterColumns } = this.getTables()[modelName]!;
-    const intOperator = this.getInputOperator("Int");
     const inputWhere = this.getInputType(modelName, "Where", {
       fields: (t) => {
         return Object.fromEntries([
           ["AND", t.field({ type: [inputWhere] })],
           ["OR", t.field({ type: [inputWhere] })],
           ["NOT", t.field({ type: inputWhere })],
-          ...tableInfo.columns.map((c: Column) => {
+          ...this.getFilterableColumns(modelName).map((c: Column) => {
             return [
               c.name,
               t.field({
@@ -345,10 +376,8 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
               }),
             ];
           }),
-          ...Object.entries(relations).map(([key, relay]) => {
-            const table = this.getTable(relay.targetTable);
-            if (!table) return [];
-            const { tableSingularAlias } = table;
+          ...this.getFilterableRelations(modelName).map(([key, relay]) => {
+            const { tableSingularAlias } = this.getTable(relay.targetTable)!;
             return [
               key,
               t.field({
@@ -356,25 +385,25 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
               }),
             ];
           }),
-          ...Object.entries(relations).flatMap(([key, relay]) => {
-            if (relay.relationType !== "many") return [];
-            const table = this.getTable(relay.targetTable);
-            if (!table) return [];
-            const countName = `${key}Count`;
-            if (!filterColumns.includes(countName)) return [];
-            return [[countName, t.field({ type: intOperator })]];
-          }),
+          ...this.getRelationCountFields(modelName).map((countName) => [
+            countName,
+            t.field({ type: this.getInputOperator("Int") }),
+          ]),
         ]);
       },
     });
     return inputWhere;
   }
+  /**
+   * Returns `undefined` when the model has nothing a caller may sort by, since
+   * GraphQL rejects an input object with no fields.
+   */
   getInputOrderBy(modelName: string) {
-    const { tableInfo, relations, filterColumns } = this.getTables()[modelName]!;
-    const inputWhere = this.getInputType(modelName, "OrderBy", {
+    if (!this.hasInputOrderBy(modelName)) return undefined;
+    const inputOrderBy = this.getInputType(modelName, "OrderBy", {
       fields: (t) => {
         return Object.fromEntries([
-          ...tableInfo.columns.map((c: Column) => {
+          ...this.getFilterableColumns(modelName).map((c: Column) => {
             return [
               c.name,
               t.field({
@@ -382,18 +411,14 @@ export class DrizzleGenerator<Types extends SchemaTypes> {
               }),
             ];
           }),
-          ...Object.entries(relations).flatMap(([key, relay]) => {
-            if (relay.relationType !== "many") return [];
-            const table = this.getTable(relay.targetTable);
-            if (!table) return [];
-            const countName = `${key}Count`;
-            if (!filterColumns.includes(countName)) return [];
-            return [[countName, t.field({ type: this.enums["OrderBy"]! })]];
-          }),
+          ...this.getRelationCountFields(modelName).map((countName) => [
+            countName,
+            t.field({ type: this.enums["OrderBy"]! }),
+          ]),
         ]);
       },
     });
-    return inputWhere;
+    return inputOrderBy;
   }
 
   getInputOperator(type: string | [string], column?: Column) {

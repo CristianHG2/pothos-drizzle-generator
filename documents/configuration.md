@@ -71,7 +71,7 @@ The following callbacks can be used within both `all` and `models`.
 | Property      | Purpose                                                    | Arguments                       | Expected Return                                        |
 | ------------- | ---------------------------------------------------------- | ------------------------------- | ------------------------------------------------------ |
 | `executable`  | Authorization check. Return `false` to block execution.    | `{ ctx, modelName, operation }` | `boolean`                                              |
-| `fields`      | Control output field visibility.                           | `{ modelName }`                 | `{ include?: [], exclude?: [] }`                       |
+| `fields`      | Control output field visibility. Excluded columns and relations are also left out of `Where` and `OrderBy`, so they cannot be filtered or sorted on. | `{ modelName }`                 | `{ include?: [], exclude?: [] }`                       |
 | `inputFields` | Control input field visibility (for mutations).            | `{ modelName }`                 | `{ include?: [], exclude?: [] }`                       |
 | `operations`  | Select which CRUD operations to generate.                  | `{ modelName }`                 | `{ include?: [], exclude?: [] }`                       |
 | `aliases`     | Customize GraphQL type and operation names.                | `{ modelName }`                 | `{ singular?: string, plural?: string, operations?: {} }` |

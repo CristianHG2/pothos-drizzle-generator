@@ -14,3 +14,7 @@ eslint.config.mjs
 /documents
 /test
 vitest.config.ts
+.env
+.claude
+.idea
+.DS_Store

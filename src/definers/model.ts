@@ -73,7 +73,7 @@ function createRelationField<Types extends SchemaTypes, Shape>(
         offset: t.arg({ type: "Int" }),
         limit: t.arg({ type: "Int" }),
         where: t.arg({ type: inputWhere }),
-        orderBy: t.arg({ type: [inputOrderBy] }),
+        ...(inputOrderBy ? { orderBy: t.arg({ type: [inputOrderBy] }) } : {}),
       },
       query: (
         args: {

@@ -90,7 +90,7 @@ type OperatorTree =
  */
 export type CreateWhereQueryContext = {
   relations: p.RelationsRecord;
-  relationPermissionsSQL?: Map<string, p.SQL | undefined>;
+  relationPermissionsSQL?: { get: (relationName: string) => p.SQL | undefined };
 };
 
 export const createWhereQuery = (
@@ -141,16 +141,25 @@ export const createWhereQuery = (
         }
       }
 
+      const column = p.getColumns(table)[key];
+      if (!column) {
+        throw new Error(
+          `createWhereQuery: "${key}" is not a column of this table; relation filters cannot be compiled here`
+        );
+      }
       const result =
         typeof value === "object"
           ? Object.entries(value).map(([k, v]) => {
               const op = OperatorMap[k as keyof typeof OperatorMap];
+              if (!op) {
+                throw new Error(`createWhereQuery: unknown operator "${k}" on "${key}"`);
+              }
               return (op as (column: p.SQL | p.Column, value: unknown) => p.SQL)(
-                p.getColumns(table)[key],
+                column,
                 v
               ) as p.SQL;
             })
-          : [p.eq(p.getColumns(table)[key], value)];
+          : [p.eq(column, value)];
       if (result.length === 1) {
         return result[0] as p.SQL;
       }

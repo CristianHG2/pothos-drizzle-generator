@@ -20,19 +20,32 @@ type QueryArgs = {
  */
 export type RelationCountContext = {
   relations: RelationsRecord;
-  relationPermissionsSQL: Map<string, SQL | undefined>;
+  relationPermissionsSQL: RelationPermissionsSQL;
 };
 
+export type RelationPermissionsSQL = {
+  get: (relationName: string) => SQL | undefined;
+};
+
+/**
+ * A counted relation's permissions (`executable`, `where`) are resolved only
+ * when a `${relationName}Count` key is actually used, and then once. Resolving
+ * them up front made every query on a model fail as soon as one of its many
+ * relations was not countable by the caller, or carried a `where` the SQL
+ * builder cannot compile, even when nothing was counted.
+ */
 export function buildRelationCountContext(
   relations: RelationsRecord,
   ctx: object,
   tables: Record<string, ModelData>
 ): RelationCountContext {
-  const relationPermissionsSQL = new Map<string, SQL | undefined>();
-  for (const [key, relay] of Object.entries(relations)) {
-    if (relay.relationType !== "many") continue;
+  const cache = new Map<string, SQL | undefined>();
+  const get = (relationName: string) => {
+    if (cache.has(relationName)) return cache.get(relationName);
+    const relay = relations[relationName];
+    if (!relay || relay.relationType !== "many") return undefined;
     const target = tables[relay.targetTableName];
-    if (!target) continue;
+    if (!target) return undefined;
     const params = checkPermissionsAndGetParams(
       relay.targetTableName,
       "count",
@@ -43,9 +56,10 @@ export function buildRelationCountContext(
     const permSQL = params.where
       ? createWhereQuery(relay.targetTable, params.where as never)
       : undefined;
-    relationPermissionsSQL.set(key, permSQL);
-  }
-  return { relations, relationPermissionsSQL };
+    cache.set(relationName, permSQL);
+    return permSQL;
+  };
+  return { relations, relationPermissionsSQL: { get } };
 }
 
 // Custom JSONB operators not supported by drizzle's relational query API.

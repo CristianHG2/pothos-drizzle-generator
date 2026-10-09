@@ -39,7 +39,7 @@ export function defineFindMany<Types extends SchemaTypes>(
           offset: t.arg({ type: "Int" }),
           limit: t.arg({ type: "Int" }),
           where: t.arg({ type: inputWhere }),
-          orderBy: t.arg({ type: [inputOrderBy] }),
+          ...(inputOrderBy ? { orderBy: t.arg({ type: [inputOrderBy] }) } : {}),
         },
         resolve: async (
           query: (selection: unknown) => object,
@@ -91,7 +91,7 @@ export function defineFindFirst<Types extends SchemaTypes>(
         args: {
           offset: t.arg({ type: "Int" }),
           where: t.arg({ type: inputWhere }),
-          orderBy: t.arg({ type: [inputOrderBy] }),
+          ...(inputOrderBy ? { orderBy: t.arg({ type: [inputOrderBy] }) } : {}),
         },
         resolve: async (
           query: (selection: unknown) => object,
