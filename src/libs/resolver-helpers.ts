@@ -21,10 +21,24 @@ type QueryArgs = {
 export type RelationCountContext = {
   relations: RelationsRecord;
   relationPermissionsSQL: RelationPermissionsSQL;
+  relationFilters?: RelationFilters;
 };
 
 export type RelationPermissionsSQL = {
   get: (relationName: string) => SQL | undefined;
+};
+
+/**
+ * Per relation: the target model's permission `where`, and the context that
+ * keys nested under the relation filter resolve against.
+ */
+export type RelationFilter = {
+  where?: object;
+  context: RelationCountContext;
+};
+
+export type RelationFilters = {
+  get: (relationName: string) => RelationFilter | undefined;
 };
 
 /**
@@ -59,7 +73,34 @@ export function buildRelationCountContext(
     cache.set(relationName, permSQL);
     return permSQL;
   };
-  return { relations, relationPermissionsSQL: { get } };
+  // A relation filter must not match target rows the caller cannot read, so the
+  // target's `where` is ANDed into it, resolved lazily like the counts above.
+  const filterCache = new Map<string, RelationFilter | undefined>();
+  const getFilter = (relationName: string) => {
+    if (filterCache.has(relationName)) return filterCache.get(relationName);
+    const relay = relations[relationName];
+    const target = relay ? tables[relay.targetTableName] : undefined;
+    if (!relay || !target) return undefined;
+    const operation = relay.relationType === "one" ? "findFirst" : "findMany";
+    const params = checkPermissionsAndGetParams(
+      relay.targetTableName,
+      operation,
+      ctx,
+      null,
+      target
+    );
+    const entry: RelationFilter = {
+      where: params.where,
+      context: buildRelationCountContext(target.relations, ctx, tables),
+    };
+    filterCache.set(relationName, entry);
+    return entry;
+  };
+  return {
+    relations,
+    relationPermissionsSQL: { get },
+    relationFilters: { get: getFilter },
+  };
 }
 
 // Custom JSONB operators not supported by drizzle's relational query API.
@@ -139,6 +180,23 @@ function transformWhereNode(
           if (Object.keys(ops).length > 0) {
             countParts.push({ relationName: relName, ops });
           }
+          continue;
+        }
+      }
+      // Checked before isColumnFilter: a relation filter made only of
+      // AND/OR/NOT would otherwise pass through untransformed and unfiltered.
+      if (context?.relationFilters) {
+        const filter = context.relationFilters.get(key);
+        if (filter) {
+          const nested = transformWhereNode(objValue, filter.context);
+          result[key] = filter.where
+            ? {
+                AND: [
+                  nested,
+                  transformWhereNode(structuredClone(filter.where) as WhereNode, filter.context),
+                ],
+              }
+            : nested;
           continue;
         }
       }
